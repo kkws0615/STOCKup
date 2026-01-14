@@ -9,22 +9,30 @@ st.set_page_config(page_title="台股AI選股系統 (即時版)", layout="wide")
 # --- 1. 核心功能：抓取真實股價 & 生成連結 ---
 @st.cache_data(ttl=600)
 def get_real_stock_data():
-    tickers_list = [
-        "2330.TW", "2454.TW", "2317.TW", "2603.TW", "2609.TW", "2303.TW", 
-        "2881.TW", "2882.TW", "1605.TW", "3231.TW", "2382.TW", "2357.TW",
-        "3008.TW", "1101.TW", "3034.TW", "6669.TW", "2379.TW", "3037.TW",
-        "2345.TW", "2412.TW", "2308.TW", "5871.TW", "2395.TW", "1513.TW",
-        "2912.TW", "1216.TW", "6505.TW", "1301.TW", "2002.TW", "2891.TW"
+    # 定義代號與中文簡稱的對照表
+    # 格式：(Yahoo代號, 中文簡稱)
+    stocks_info = [
+        ("2330.TW", "台積電"), ("2454.TW", "聯發科"), ("2317.TW", "鴻海"), 
+        ("2603.TW", "長榮"),   ("2609.TW", "陽明"),   ("2303.TW", "聯電"), 
+        ("2881.TW", "富邦金"), ("2882.TW", "國泰金"), ("1605.TW", "華新"), 
+        ("3231.TW", "緯創"),   ("2382.TW", "廣達"),   ("2357.TW", "華碩"),
+        ("3008.TW", "大立光"), ("1101.TW", "台泥"),   ("3034.TW", "聯詠"), 
+        ("6669.TW", "緯穎"),   ("2379.TW", "瑞昱"),   ("3037.TW", "欣興"),
+        ("2345.TW", "智邦"),   ("2412.TW", "中華電"), ("2308.TW", "台達電"), 
+        ("5871.TW", "中租-KY"),("2395.TW", "研華"),   ("1513.TW", "中興電"),
+        ("2912.TW", "統一超"), ("1216.TW", "統一"),   ("6505.TW", "台塑化"), 
+        ("1301.TW", "台塑"),   ("2002.TW", "中鋼"),   ("2891.TW", "中信金")
     ]
     
     data = []
-    progress_text = "正在連線 Yahoo Finance 抓取最新股價，請稍候..."
+    progress_text = "正在連線 Yahoo Finance 抓取最新股價..."
     my_bar = st.progress(0, text=progress_text)
     
-    total = len(tickers_list)
+    total = len(stocks_info)
     
-    for i, ticker in enumerate(tickers_list):
-        my_bar.progress((i + 1) / total, text=f"正在分析: {ticker} ({i+1}/{total})")
+    for i, (ticker, name) in enumerate(stocks_info):
+        # 更新進度條
+        my_bar.progress((i + 1) / total, text=f"正在分析: {ticker} {name} ({i+1}/{total})")
         
         try:
             stock = yf.Ticker(ticker)
@@ -38,7 +46,7 @@ def get_real_stock_data():
             daily_change_pct = ((current_price - prev_price) / prev_price) * 100
             history_trend = hist['Close'].tolist()
             
-            # 模擬 AI 預測部分
+            # AI 預測模擬
             predicted_growth = round(random.uniform(-10, 30), 2)
             
             rating = "一般"
@@ -51,7 +59,8 @@ def get_real_stock_data():
             yahoo_url = f"https://tw.stock.yahoo.com/quote/{ticker}"
 
             data.append({
-                "URL": yahoo_url,   # 這是我們要顯示的欄位 (內含連結)
+                "代號連結": yahoo_url,  # 這是實際的網址，之後會用 LinkColumn 顯示為代號
+                "簡稱": name,           # 純文字中文簡稱
                 "目前股價": round(current_price, 2),
                 "今日漲跌": daily_change_pct,
                 "AI預測月漲幅": predicted_growth,
@@ -68,7 +77,7 @@ def get_real_stock_data():
 
 # --- 2. 介面設計 ---
 
-st.title("📈 台股 AI 飆股快篩 (即時連線版)")
+st.title("📈 台股 AI 飆股快篩 (即時版)")
 
 col1, col2 = st.columns([1, 5])
 with col1:
@@ -77,7 +86,7 @@ with col2:
     if show_strong_only:
         st.caption("🔥 篩選模式：僅顯示 AI 預測高爆發股")
     else:
-        st.caption("📋 監控模式：顯示熱門觀察名單 (資料來源：Yahoo Finance)")
+        st.caption("📋 監控模式：顯示熱門觀察名單 (點擊代號可查看 Yahoo 個股詳情)")
 
 df = get_real_stock_data()
 
@@ -90,7 +99,7 @@ else:
 
 display_df = display_df.sort_values(by="AI預測月漲幅", ascending=False)
 
-# --- 4. 表格顯示 (修正代號顯示問題) ---
+# --- 4. 表格顯示 ---
 
 def color_numbers(row):
     styles = []
@@ -114,23 +123,23 @@ st.dataframe(
     height=800,
     hide_index=True,
     column_config={
-        # === 修正重點在這裡 ===
-        "URL": st.column_config.LinkColumn(
-            "股票代號", 
-            # 這個語法意思是：從網址中抓取 /quote/ 後面，直到 .TW 前面的文字來顯示
-            # 網址範例：https://tw.stock.yahoo.com/quote/2330.TW -> 顯示 2330
+        # === 關鍵修改：代號超連結 ===
+        "代號連結": st.column_config.LinkColumn(
+            "代號", 
+            # 使用 Regex 從網址中提取數字 (例如從 .../quote/2330.TW 提取 2330)
             display_text="https://tw\.stock\.yahoo\.com/quote/(.*?)\.TW",
             help="點擊前往 Yahoo 股市",
             width="small"
         ),
+        "簡稱": st.column_config.TextColumn("簡稱", width="small"),
         "目前股價": st.column_config.NumberColumn("目前股價", format="$%.2f"),
         "今日漲跌": st.column_config.NumberColumn("今日漲跌", format="%.2f%%"),
         "AI預測月漲幅": st.column_config.NumberColumn("預測月漲幅", format="%.2f%%"),
         "近一年走勢": st.column_config.LineChartColumn("近一年走勢", y_min=0, y_max=None),
     },
-    # 這裡指定欄位順序
-    column_order=("URL", "目前股價", "今日漲跌", "AI預測月漲幅", "評級", "近一年走勢") 
+    # 設定欄位順序：代號在最前面
+    column_order=("代號連結", "簡稱", "目前股價", "今日漲跌", "AI預測月漲幅", "評級", "近一年走勢") 
 )
 
 st.markdown("---")
-st.caption("資料來源：Yahoo Finance API (延遲報價)")
+st.caption("資料來源：Yahoo Finance API (延遲報價) | 預測漲幅為演算法模擬測試用")
