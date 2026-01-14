@@ -4,8 +4,9 @@ import pandas as pd
 import yfinance as yf
 import numpy as np
 import requests
+import re  # 引入正規表示法，用來抓網頁標題
 
-st.set_page_config(page_title="台股AI標股神探 (內建字典版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (全能補完版)", layout="wide")
 
 # --- 0. 初始化 ---
 if 'watch_list' not in st.session_state:
@@ -23,8 +24,7 @@ if 'watch_list' not in st.session_state:
 if 'last_added' not in st.session_state:
     st.session_state.last_added = ""
 
-# --- 1. 內建台股熱門股字典 (解決 API 擋 IP 問題) ---
-# 這裡列出台股前 150 大權值股與熱門股，保證搜尋得到
+# --- 1. 內建字典 (常用股快速查) ---
 tw_stock_dict = {
     "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "廣達": "2382", "富邦金": "2881",
     "國泰金": "2882", "中華電": "2412", "台達電": "2308", "聯電": "2303", "中信金": "2891",
@@ -41,14 +41,10 @@ tw_stock_dict = {
     "宏碁": "2353", "微星": "2377", "技嘉": "2376", "佳世達": "2352", "京元電子": "2449",
     "奇鋐": "3017", "雙鴻": "3324", "士電": "1503", "中興電": "1513", "亞力": "1514",
     "東元": "1504", "大同": "2371", "億泰": "1616", "大亞": "1609", "宏達電": "2498",
-    "友達": "2409", "群創": "3481", "彩晶": "6116", "威盛": "2388", "力積電": "6770",
-    "世界先進": "5347", "群聯": "8299", "力旺": "3529", "信驊": "5274", "祥碩": "5269",
-    "譜瑞-KY": "4966", "創意": "3443", "世芯-KY": "3661", "M31": "6643", "愛普*": "6531",
-    "智原": "3035", "金像電": "2368", "健鼎": "3044", "台光電": "2383", "台燿": "6274",
-    "楠梓電": "2316", "華通": "2313", "燿華": "2367", "瀚宇博": "5469", "精成科": "6191"
+    "友達": "2409", "群創": "3481", "彩晶": "6116", "威盛": "2388", "力積電": "6770"
 }
 
-# 產業資料庫 (省略部分以節省空間，功能不變)
+# 產業資料庫
 ticker_sector_map = {
     "2330": "Semi", "2454": "Semi", "2303": "Semi", "3034": "Semi", "2379": "Semi",
     "2317": "AI_Hw", "3231": "AI_Hw", "2382": "AI_Hw", "6669": "AI_Hw", "2357": "AI_Hw",
@@ -69,36 +65,65 @@ sector_trends = {
     "Default": {"bull": "資金輪動健康，具備題材吸引法人進駐。", "bear": "產業前景不明朗，資金撤出，面臨修正壓力。"}
 }
 
-# --- 1. 核心功能：雙重搜尋機制 ---
-def search_stock_robust(query):
-    # 策略 1: 查內建字典 (最快、最準)
-    # 支援輸入 "台新" 找到 "台新金"
-    for name, code in tw_stock_dict.items():
-        if query in name or name in query: # 模糊匹配
-            return f"{code}.TW", name
-            
-    # 策略 2: 如果輸入的是純數字 (如 1616)
-    if query.isdigit():
-        return f"{query}.TW", f"自選股-{query}"
-
-    # 策略 3: 使用 Yahoo TW API (作為備用，雖然可能被擋)
-    url = "https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService"
+# --- 2. 關鍵功能：網路爬蟲抓真名 ---
+def scrape_yahoo_title(symbol):
+    """
+    這是一個爬蟲機器人，它會去 Yahoo 股市網頁看標題。
+    網頁標題通常長這樣： "億泰(1616) - 個股走勢 - Yahoo奇摩股市"
+    我們只要抓括號前面的字，就是正確中文名！
+    """
+    url = f"https://tw.stock.yahoo.com/quote/{symbol}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        r = requests.get(url, params={"query": query, "limit": 3}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        data = r.json()
-        results = data.get('data', {}).get('result', [])
-        for res in results:
-            if res.get('exchange') == 'TAI': return f"{res['symbol']}.TW", res['name']
-            if res.get('exchange') == 'TWO': return f"{res['symbol']}.TWO", res['name']
+        r = requests.get(url, headers=headers, timeout=3)
+        if r.status_code == 200:
+            # 尋找 <title>標籤
+            match = re.search(r'<title>(.*?)\(', r.text)
+            if match:
+                return match.group(1).strip() # 回傳 "億泰"
     except:
         pass
+    return None
+
+def search_stock_robust(query):
+    # 策略 1: 查內建字典 (秒殺台新金、長榮航)
+    for name, code in tw_stock_dict.items():
+        if query in name or name in query:
+            return f"{code}.TW", name
             
+    # 策略 2: 輸入的是數字 (處理 1616)
+    if query.isdigit():
+        symbol = f"{query}.TW"
+        
+        # A. 先確認這支股票存在
+        try:
+            ticker = yf.Ticker(symbol)
+            if ticker.history(period='1d').empty:
+                # 試試看上櫃 (.TWO)
+                symbol = f"{query}.TWO"
+                ticker = yf.Ticker(symbol)
+                if ticker.history(period='1d').empty:
+                    return None, None
+        except:
+            return None, None
+            
+        # B. 股票存在，開始抓中文名
+        # 先試圖從字典找 (也許有遺漏)
+        # 再用爬蟲去 Yahoo 網頁抓 (必殺技)
+        chinese_name = scrape_yahoo_title(symbol)
+        
+        if chinese_name:
+            return symbol, chinese_name
+        else:
+            return symbol, f"自選股-{query}" # 真的抓不到才用這個
+
     return None, None
 
-# --- 2. 核心邏輯 ---
+# --- 3. 核心邏輯 (分析策略) ---
 def analyze_stock_strategy(ticker_code, current_price, ma20, ma60, trend_list):
     bias_20 = ((current_price - ma20) / ma20) * 100
     rating, color_class, predict_score, reason = "觀察", "tag-hold", 50, ""
+    
     sector_key = ticker_sector_map.get(ticker_code, "Default")
     
     if current_price > ma20 and current_price > ma60 and bias_20 > 5:
@@ -121,7 +146,7 @@ def analyze_stock_strategy(ticker_code, current_price, ma20, ma60, trend_list):
         reason = f"👀 <b>技術面：</b>月線({ma20:.1f})附近震盪。<br>🌍 <b>產業面：</b>多空消息紛雜，等待方向。"
     return rating, color_class, reason, predict_score
 
-# --- 3. 資料處理 ---
+# --- 4. 資料處理 ---
 @st.cache_data(ttl=300) 
 def fetch_stock_data_wrapper(tickers):
     if not tickers: return None
@@ -169,7 +194,7 @@ def process_stock_data():
         except: continue
     return sorted(rows, key=lambda x: x['score'], reverse=True)
 
-# --- 4. 畫圖 ---
+# --- 5. 畫圖 ---
 def make_sparkline(data):
     if not data: return ""
     width, height = 100, 30
@@ -183,7 +208,7 @@ def make_sparkline(data):
     color = "#dc3545" if data[-1] > data[0] else "#28a745"
     return f'<svg width="{width}" height="{height}" style="overflow:visible"><polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="2"/><circle cx="{points[-1].split(",")[0]}" cy="{points[-1].split(",")[1]}" r="3" fill="{color}"/></svg>'
 
-# --- 5. 介面 ---
+# --- 6. 介面 ---
 st.title("🚀 台股 AI 飆股神探")
 
 with st.container():
@@ -197,7 +222,7 @@ with st.container():
                 submitted = st.form_submit_button("搜尋加入")
             
             if submitted and search_query:
-                # 呼叫雙重搜尋機制
+                # 呼叫全能搜尋
                 symbol, name = search_stock_robust(search_query)
                 
                 if symbol:
@@ -209,16 +234,16 @@ with st.container():
                         st.success(f"已加入：{name} ({symbol})")
                         st.rerun()
                 else:
-                    st.error(f"字典與 API 皆找不到「{search_query}」，請確認名稱。")
+                    st.error(f"找不到「{search_query}」，請確認是否為有效台股。")
 
     with col_info:
-        st.info("💡 **升級通知**：已內建熱門股字典，現在輸入 **「台新金」**、**「長榮航」** 保證找得到！")
+        st.info("💡 **全能搜尋**：輸入 **「台新金」** 會查字典，輸入 **「1616」** 會自動爬蟲抓取中文名「億泰」！")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
 if filter_strong: data_rows = [d for d in data_rows if d['rating'] == "強力推薦"]
 
-# --- 6. HTML 渲染 ---
+# --- 7. HTML 渲染 ---
 html_content = """
 <!DOCTYPE html>
 <html>
@@ -228,7 +253,6 @@ html_content = """
     table { width: 100%; border-collapse: collapse; font-size: 15px; }
     th { background: #f2f2f2; padding: 12px; text-align: left; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #ddd; }
     td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
-    
     tr { position: relative; z-index: 1; }
     tr:hover { background: #f8f9fa; z-index: 100; position: relative; }
     
@@ -247,6 +271,7 @@ html_content = """
     }
     .tooltip-text::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px; border-width: 6px; border-style: solid; border-color: #2c3e50 transparent transparent transparent; }
     .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; }
+
     tr:nth-child(-n+3) .tooltip-text { bottom: auto; top: 140%; }
     tr:nth-child(-n+3) .tooltip-text::after { top: auto; bottom: 100%; border-color: transparent transparent #2c3e50 transparent; }
 
