@@ -4,9 +4,9 @@ import pandas as pd
 import yfinance as yf
 import numpy as np
 import requests
-import re  # 引入正規表示法，用來抓網頁標題
+import re
 
-st.set_page_config(page_title="台股AI標股神探 (全能補完版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (新股友善版)", layout="wide")
 
 # --- 0. 初始化 ---
 if 'watch_list' not in st.session_state:
@@ -24,7 +24,7 @@ if 'watch_list' not in st.session_state:
 if 'last_added' not in st.session_state:
     st.session_state.last_added = ""
 
-# --- 1. 內建字典 (常用股快速查) ---
+# --- 1. 內建字典 ---
 tw_stock_dict = {
     "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "廣達": "2382", "富邦金": "2881",
     "國泰金": "2882", "中華電": "2412", "台達電": "2308", "聯電": "2303", "中信金": "2891",
@@ -41,7 +41,8 @@ tw_stock_dict = {
     "宏碁": "2353", "微星": "2377", "技嘉": "2376", "佳世達": "2352", "京元電子": "2449",
     "奇鋐": "3017", "雙鴻": "3324", "士電": "1503", "中興電": "1513", "亞力": "1514",
     "東元": "1504", "大同": "2371", "億泰": "1616", "大亞": "1609", "宏達電": "2498",
-    "友達": "2409", "群創": "3481", "彩晶": "6116", "威盛": "2388", "力積電": "6770"
+    "友達": "2409", "群創": "3481", "彩晶": "6116", "威盛": "2388", "力積電": "6770",
+    "鴻輝": "7769" # 手動加入這個新朋友
 }
 
 # 產業資料庫
@@ -65,66 +66,65 @@ sector_trends = {
     "Default": {"bull": "資金輪動健康，具備題材吸引法人進駐。", "bear": "產業前景不明朗，資金撤出，面臨修正壓力。"}
 }
 
-# --- 2. 關鍵功能：網路爬蟲抓真名 ---
+# --- 2. 關鍵功能：爬蟲抓真名 ---
 def scrape_yahoo_title(symbol):
-    """
-    這是一個爬蟲機器人，它會去 Yahoo 股市網頁看標題。
-    網頁標題通常長這樣： "億泰(1616) - 個股走勢 - Yahoo奇摩股市"
-    我們只要抓括號前面的字，就是正確中文名！
-    """
     url = f"https://tw.stock.yahoo.com/quote/{symbol}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         r = requests.get(url, headers=headers, timeout=3)
         if r.status_code == 200:
-            # 尋找 <title>標籤
             match = re.search(r'<title>(.*?)\(', r.text)
             if match:
-                return match.group(1).strip() # 回傳 "億泰"
+                return match.group(1).strip()
     except:
         pass
     return None
 
 def search_stock_robust(query):
-    # 策略 1: 查內建字典 (秒殺台新金、長榮航)
+    # 策略 1: 查內建字典
     for name, code in tw_stock_dict.items():
         if query in name or name in query:
             return f"{code}.TW", name
             
-    # 策略 2: 輸入的是數字 (處理 1616)
+    # 策略 2: 數字代號 (處理 7769)
     if query.isdigit():
         symbol = f"{query}.TW"
         
-        # A. 先確認這支股票存在
         try:
-            ticker = yf.Ticker(symbol)
-            if ticker.history(period='1d').empty:
-                # 試試看上櫃 (.TWO)
-                symbol = f"{query}.TWO"
-                ticker = yf.Ticker(symbol)
-                if ticker.history(period='1d').empty:
-                    return None, None
-        except:
-            return None, None
+            # 優先嘗試 TW
+            if not yf.Ticker(symbol).history(period='1d').empty:
+                name = scrape_yahoo_title(symbol)
+                return symbol, (name if name else f"自選股-{query}")
             
-        # B. 股票存在，開始抓中文名
-        # 先試圖從字典找 (也許有遺漏)
-        # 再用爬蟲去 Yahoo 網頁抓 (必殺技)
-        chinese_name = scrape_yahoo_title(symbol)
-        
-        if chinese_name:
-            return symbol, chinese_name
-        else:
-            return symbol, f"自選股-{query}" # 真的抓不到才用這個
-
+            # 再試 TWO (上櫃/興櫃)
+            symbol = f"{query}.TWO"
+            if not yf.Ticker(symbol).history(period='1d').empty:
+                name = scrape_yahoo_title(symbol)
+                return symbol, (name if name else f"自選股-{query}")
+        except:
+            pass
+            
     return None, None
 
-# --- 3. 核心邏輯 (分析策略) ---
+# --- 3. 核心邏輯 (支援資料不足的情況) ---
 def analyze_stock_strategy(ticker_code, current_price, ma20, ma60, trend_list):
-    bias_20 = ((current_price - ma20) / ma20) * 100
     rating, color_class, predict_score, reason = "觀察", "tag-hold", 50, ""
-    
     sector_key = ticker_sector_map.get(ticker_code, "Default")
+    
+    # === 關鍵修改：處理新股資料不足 ===
+    if ma60 is None:
+        # 資料不足 60 天，無法算季線 -> 進入新股策略
+        # 簡單邏輯：看月線 (如果有) 或看短線趨勢
+        if ma20 and current_price > ma20:
+             rating, color_class, predict_score = "短多", "tag-buy", 60
+             reason = f"🚀 <b>新股/興櫃：</b>掛牌時間較短，目前站上月線({ma20:.1f})，短線動能強。<br>⚠️ 波動較大請注意風險。"
+        else:
+             rating, color_class, predict_score = "觀察", "tag-hold", 40
+             reason = f"👀 <b>新股/興櫃：</b>掛牌時間短，資料不足以計算季線，建議觀察量能變化。"
+        return rating, color_class, reason, predict_score
+
+    # === 原本的完整策略 (資料充足) ===
+    bias_20 = ((current_price - ma20) / ma20) * 100
     
     if current_price > ma20 and current_price > ma60 and bias_20 > 5:
         rating, color_class, predict_score = "強力推薦", "tag-strong", 90
@@ -167,13 +167,19 @@ def process_stock_data():
             closes = df_stock['Close']
             if isinstance(closes, pd.DataFrame): closes = closes.iloc[:, 0]
             closes_list = closes.dropna().tolist()
-            if len(closes_list) < 60: continue
+            
+            # === 關鍵修改：放寬資料長度限制 ===
+            # 原本 < 60 就 continue，現在改成 < 5 才跳過
+            if len(closes_list) < 5: continue 
             
             current_price = closes_list[-1]
             prev_price = closes_list[-2]
             daily_change_pct = ((current_price - prev_price) / prev_price) * 100
-            ma20 = sum(closes_list[-20:]) / 20
-            ma60 = sum(closes_list[-60:]) / 60
+            
+            # 計算均線 (如果不夠長，就設為 None)
+            ma20 = sum(closes_list[-20:]) / 20 if len(closes_list) >= 20 else None
+            ma60 = sum(closes_list[-60:]) / 60 if len(closes_list) >= 60 else None # 興櫃可能沒有 MA60
+            
             clean_code = ticker.replace(".TW", "").replace(".TWO", "")
             
             rating, color_class, reason, score = analyze_stock_strategy(
@@ -183,12 +189,15 @@ def process_stock_data():
             is_new = (ticker == st.session_state.last_added)
             final_sort_key = 9999 if is_new else score 
 
+            # 顯示時，如果 ma20 是 None，顯示 "N/A"
+            ma20_display = f"{ma20:.1f}" if ma20 else "N/A"
+
             rows.append({
                 "code": clean_code, "name": current_map[ticker],
                 "url": f"https://tw.stock.yahoo.com/quote/{ticker}",
                 "price": current_price, "change": daily_change_pct, 
                 "score": final_sort_key,
-                "ma20": ma20, "rating": rating, "rating_class": color_class,
+                "ma20_disp": ma20_display, "rating": rating, "rating_class": color_class,
                 "reason": reason, "trend": closes_list[-30:]
             })
         except: continue
@@ -217,14 +226,12 @@ with st.container():
         with st.form(key='add_stock_form', clear_on_submit=True):
             col_input, col_btn = st.columns([3, 1])
             with col_input: 
-                search_query = st.text_input("新增監控", placeholder="輸入：台新金 或 1616")
+                search_query = st.text_input("新增監控", placeholder="輸入：7769 或 台新金")
             with col_btn: 
                 submitted = st.form_submit_button("搜尋加入")
             
             if submitted and search_query:
-                # 呼叫全能搜尋
                 symbol, name = search_stock_robust(search_query)
-                
                 if symbol:
                     if symbol in st.session_state.watch_list:
                         st.warning(f"{name} ({symbol}) 已經在清單中了！")
@@ -234,10 +241,10 @@ with st.container():
                         st.success(f"已加入：{name} ({symbol})")
                         st.rerun()
                 else:
-                    st.error(f"找不到「{search_query}」，請確認是否為有效台股。")
+                    st.error(f"找不到「{search_query}」。")
 
     with col_info:
-        st.info("💡 **全能搜尋**：輸入 **「台新金」** 會查字典，輸入 **「1616」** 會自動爬蟲抓取中文名「億泰」！")
+        st.info("💡 **修正通知**：已放寬資料限制，現在可以正常顯示 **新股、興櫃股 (如 7769 鴻輝)**。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
@@ -298,7 +305,7 @@ for row in data_rows:
         <tr>
             <td><a href="{row['url']}" target="_blank">{row['code']}</a></td>
             <td>{row['name']}</td>
-            <td class="{p_cls}">{row['price']:.1f} <span class="sub-text">({row['ma20']:.1f})</span></td>
+            <td class="{p_cls}">{row['price']:.1f} <span class="sub-text">({row['ma20_disp']})</span></td>
             <td class="{p_cls}">{row['change']:.2f}%</td>
             <td>
                 <div class="tooltip-container {row['rating_class']}">
