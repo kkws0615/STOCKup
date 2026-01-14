@@ -3,10 +3,11 @@ import streamlit.components.v1 as components
 import pandas as pd
 import yfinance as yf
 import numpy as np
+import random
 
-st.set_page_config(page_title="台股AI標股神探 (完美圖層版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (產業趨勢版)", layout="wide")
 
-# --- 0. 初始化 ---
+# --- 0. 初始化與資料庫 ---
 if 'watch_list' not in st.session_state:
     st.session_state.watch_list = {
         "2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2603.TW": "長榮",
@@ -19,25 +20,81 @@ if 'watch_list' not in st.session_state:
         "2002.TW": "中鋼",   "2891.TW": "中信金"
     }
 
+# === 新增：產業分類對照表 ===
+ticker_sector_map = {
+    "2330": "Semi", "2454": "Semi", "2303": "Semi", "3034": "Semi", "2379": "Semi", # 半導體
+    "2317": "AI_Hw", "3231": "AI_Hw", "2382": "AI_Hw", "6669": "AI_Hw", "2357": "AI_Hw", # AI硬體/組裝
+    "2603": "Ship", "2609": "Ship", # 航運
+    "2881": "Fin", "2882": "Fin", "5871": "Fin", "2891": "Fin", # 金融
+    "3008": "Optic", # 光學
+    "1605": "Wire", "1513": "Power", "2308": "Power", # 重電線纜
+    "1101": "Cement", "2002": "Steel", "6505": "Plastic", "1301": "Plastic", # 傳產原物料
+    "2412": "Tel", "4904": "Tel", # 電信
+}
+
+# === 新增：產業趨勢劇本 (AI 觀點) ===
+sector_trends = {
+    "Semi": {
+        "bull": "受惠 AI 高效能運算需求爆發，先進製程產能滿載，產業循環向上。",
+        "bear": "消費性電子庫存去化緩慢，成熟製程面臨價格競爭壓力。"
+    },
+    "AI_Hw": {
+        "bull": "雲端巨頭持續擴大資本支出，AI 伺服器與邊緣運算裝置出貨強勁。",
+        "bear": "供應鏈缺料問題緩解後，市場擔憂毛利率遭壓縮，評價面臨修正。"
+    },
+    "Ship": {
+        "bull": "地緣政治緊張導致紅海航運受阻，運價指數(SCFI)維持高檔震盪。",
+        "bear": "全球新船運力大量投放，供過於求壓力浮現，運價恐面臨回調。"
+    },
+    "Fin": {
+        "bull": "受惠高利率環境與投資收益回升，銀行與壽險獲利動能穩健。",
+        "bear": "避險成本居高不下，加上降息預期反覆，影響淨利差表現。"
+    },
+    "Power": {
+        "bull": "台電強韌電網計畫持續釋單，綠能基礎建設需求強勁，訂單能見度長。",
+        "bear": "原材料銅價波動大，且漲多後評價偏高，面臨獲利了結賣壓。"
+    },
+    "Default": { # 預設 (找不到產業時用)
+        "bull": "資金輪動健康，產業具備題材性，吸引法人買盤進駐。",
+        "bear": "產業前景不明朗，市場資金撤出，短線面臨估值修正。"
+    }
+}
+
 # --- 1. 核心邏輯 ---
-def analyze_stock_strategy(current_price, ma20, ma60, trend_list):
+def analyze_stock_strategy(ticker_code, current_price, ma20, ma60, trend_list):
     bias_20 = ((current_price - ma20) / ma20) * 100
     rating, color_class, predict_score, reason = "觀察", "tag-hold", 50, ""
     
+    # 1. 取得產業趨勢
+    # 從代號找產業 key，找不到就用 Default
+    sector_key = ticker_sector_map.get(ticker_code, "Default")
+    
+    # 2. 技術面判斷
     if current_price > ma20 and current_price > ma60 and bias_20 > 5:
         rating, color_class, predict_score = "強力推薦", "tag-strong", 90
-        reason = f"🔥 強力多頭：股價強勢站穩月線({ma20:.1f})與季線之上，乖離率 {bias_20:.1f}% 顯示動能強勁。"
+        # 取得該產業的「利多」描述
+        trend_desc = sector_trends.get(sector_key, sector_trends["Default"])["bull"]
+        reason = f"🔥 <b>技術面：</b>股價強勢站穩月線({ma20:.1f})，乖離率 {bias_20:.1f}% 動能強勁。<br>🌍 <b>產業面：</b>{trend_desc}"
+        
     elif current_price > ma20 and bias_20 > 0:
         rating, color_class, predict_score = "買進", "tag-buy", 70
-        reason = f"📈 翻多訊號：股價站上月線支撐({ma20:.1f})，短線趨勢轉強，可嘗試佈局。"
+        trend_desc = sector_trends.get(sector_key, sector_trends["Default"])["bull"]
+        reason = f"📈 <b>技術面：</b>站上月線支撐({ma20:.1f})，短線轉強。<br>🌍 <b>產業面：</b>{trend_desc}"
+        
     elif current_price < ma20 and current_price < ma60:
         rating, color_class, predict_score = "避開", "tag-sell", 10
-        reason = f"⚠️ 空頭排列：股價跌破月線({ma20:.1f})與季線，上方壓力沈重。"
+        # 取得該產業的「利空」描述
+        trend_desc = sector_trends.get(sector_key, sector_trends["Default"])["bear"]
+        reason = f"⚠️ <b>技術面：</b>跌破月線({ma20:.1f})與季線，上方壓力大。<br>🌍 <b>產業面：</b>{trend_desc}"
+        
     elif current_price < ma20:
         rating, color_class, predict_score = "賣出", "tag-sell", 30
-        reason = f"📉 轉弱警示：股價跌破月線({ma20:.1f})，短線動能轉弱，留意修正風險。"
+        trend_desc = sector_trends.get(sector_key, sector_trends["Default"])["bear"]
+        reason = f"📉 <b>技術面：</b>跌破月線({ma20:.1f})，動能轉弱。<br>🌍 <b>產業面：</b>{trend_desc}"
+        
     else:
-        reason = f"👀 區間震盪：股價在月線({ma20:.1f})附近徘徊，方向未明。"
+        # 觀察中的產業描述通常比較中性，這裡我們隨機挑選或用通用描述
+        reason = f"👀 <b>技術面：</b>股價在月線({ma20:.1f})附近震盪。<br>🌍 <b>產業面：</b>該產業目前多空消息紛雜，等待方向浮現。"
         
     return rating, color_class, reason, predict_score
 
@@ -50,7 +107,7 @@ def fetch_fetch_stock_data_wrapper(tickers):
 def process_stock_data():
     current_map = st.session_state.watch_list
     tickers = list(current_map.keys())
-    with st.spinner(f'AI 正在計算 {len(tickers)} 檔個股指標...'):
+    with st.spinner(f'AI 正在整合 {len(tickers)} 檔個股技術面與產業數據...'):
         data_download = fetch_fetch_stock_data_wrapper(tickers)
     
     rows = []
@@ -69,11 +126,15 @@ def process_stock_data():
             daily_change_pct = ((current_price - prev_price) / prev_price) * 100
             ma20 = sum(closes_list[-20:]) / 20
             ma60 = sum(closes_list[-60:]) / 60
+            
+            # 傳入代號 (不含.TW) 以便查找產業
+            clean_code = ticker.replace(".TW", "")
+            
             rating, color_class, reason, score = analyze_stock_strategy(
-                current_price, ma20, ma60, closes_list[-10:]
+                clean_code, current_price, ma20, ma60, closes_list[-10:]
             )
             rows.append({
-                "code": ticker.replace(".TW", ""), "name": current_map[ticker],
+                "code": clean_code, "name": current_map[ticker],
                 "url": f"https://tw.stock.yahoo.com/quote/{ticker}",
                 "price": current_price, "change": daily_change_pct, "score": score,
                 "ma20": ma20, "rating": rating, "rating_class": color_class,
@@ -116,13 +177,13 @@ with st.container():
                         else: st.error("代號錯誤")
                     except: st.error("連線錯誤")
     with col_info:
-        st.info("💡 圖層修復完畢：提示框現在會正確覆蓋在下方內容之上。")
+        st.info("💡 內容升級：AI 評測現在包含 **「技術指標分析」** 與 **「產業趨勢解讀」**。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
 if filter_strong: data_rows = [d for d in data_rows if d['rating'] == "強力推薦"]
 
-# --- 5. HTML 渲染 (圖層修正版) ---
+# --- 5. HTML 渲染 ---
 html_content = """
 <!DOCTYPE html>
 <html>
@@ -133,31 +194,22 @@ html_content = """
     th { background: #f2f2f2; padding: 12px; text-align: left; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #ddd; }
     td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
     
-    /* === 關鍵修正 1：每一行預設是相對定位，但 z-index 很低 === */
     tr { position: relative; z-index: 1; }
-    
-    /* === 關鍵修正 2：當滑鼠移到該行時，把這一行的圖層順序拉到最高 (z-index: 100) === */
-    /* 這樣它的提示框就會蓋住下面的所有內容 */
     tr:hover { background: #f8f9fa; z-index: 100; position: relative; }
     
     .up { color: #d62728; font-weight: bold; }
     .down { color: #2ca02c; font-weight: bold; }
     a { text-decoration: none; color: #0066cc; font-weight: bold; background: #f0f7ff; padding: 2px 6px; border-radius: 4px; }
     
-    /* Tooltip 樣式 */
     .tooltip-container { position: relative; display: inline-block; cursor: help; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 13px; transition: all 0.2s; }
     .tooltip-container:hover { transform: scale(1.05); }
     
-    /* 提示框本體 (預設在上方) */
     .tooltip-text { 
-        visibility: hidden; width: 250px; background-color: #2c3e50; color: #fff; 
-        text-align: left; border-radius: 8px; padding: 10px; position: absolute; 
-        
-        /* 這裡設定超高的 z-index */
+        visibility: hidden; width: 350px; background-color: #2c3e50; color: #fff; 
+        text-align: left; border-radius: 8px; padding: 15px; position: absolute; 
         z-index: 9999; 
-        
-        bottom: 140%; left: 50%; margin-left: -125px; 
-        opacity: 0; transition: opacity 0.3s; font-weight: normal; font-size: 13px; line-height: 1.5; 
+        bottom: 140%; left: 50%; margin-left: -175px; 
+        opacity: 0; transition: opacity 0.3s; font-weight: normal; font-size: 14px; line-height: 1.6; 
         pointer-events: none; box-shadow: 0 5px 15px rgba(0,0,0,0.5);
     }
     .tooltip-text::after { 
@@ -166,7 +218,6 @@ html_content = """
     }
     .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; }
 
-    /* === 前 3 列向下顯示 === */
     tr:nth-child(-n+3) .tooltip-text { bottom: auto; top: 140%; }
     tr:nth-child(-n+3) .tooltip-text::after { top: auto; bottom: 100%; border-color: transparent transparent #2c3e50 transparent; }
 
@@ -209,4 +260,4 @@ html_content += "</tbody></table></body></html>"
 components.html(html_content, height=800, scrolling=True)
 
 st.markdown("---")
-st.caption("資料來源：Yahoo Finance API")
+st.caption("資料來源：Yahoo Finance API | 產業觀點為 AI 模擬生成")
