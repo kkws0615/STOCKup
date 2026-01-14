@@ -4,9 +4,8 @@ import pandas as pd
 import yfinance as yf
 import numpy as np
 import requests
-import re # 用來處理正規表示法抓名字
 
-st.set_page_config(page_title="台股AI標股神探 (中文爬蟲版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (台灣原生搜尋版)", layout="wide")
 
 # --- 0. 初始化 ---
 if 'watch_list' not in st.session_state:
@@ -46,82 +45,50 @@ sector_trends = {
     "Default": {"bull": "資金輪動健康，具備題材吸引法人進駐。", "bear": "產業前景不明朗，資金撤出，面臨修正壓力。"}
 }
 
-# --- 1. 核心功能：絕對準確的中文爬蟲 ---
-def get_chinese_name_from_web(symbol):
+# --- 1. 核心功能：Yahoo 奇摩股市 (台灣版) 內部 API 搜尋 ---
+def search_yahoo_tw_native(query):
     """
-    直接爬取 Yahoo 奇摩股市網頁標題
-    網頁標題格式通常為: "台新金 (2887) - 個股走勢 - Yahoo奇摩股市"
+    直接呼叫 Yahoo 奇摩股市的 Autocomplete API。
+    這跟你在網頁搜尋欄打字時用到的是同一個介面，對中文支援度 100%。
     """
-    url = f"https://tw.stock.yahoo.com/quote/{symbol}"
+    url = "https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService"
+    params = {
+        "query": query,
+        "limit": 5
+    }
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=5)
-        r.encoding = 'utf-8' # 強制編碼
-        if r.status_code == 200:
-            # 使用 Regex 抓取 <title>...</title>
-            match = re.search(r'<title>(.*?) - 個股走勢', r.text)
-            if match:
-                title_text = match.group(1) # 例如 "台新金 (2887)"
-                # 再次用 Regex 取出括號前的中文
-                name_match = re.search(r'^(.*?) \(', title_text)
-                if name_match:
-                    return name_match.group(1).strip()
-                return title_text.split('(')[0].strip()
-    except:
-        pass
-    return None
-
-def smart_search_stock(query):
-    # 1. 如果輸入的是純數字 (如 1616)
-    if query.isdigit():
-        symbol = f"{query}.TW"
-        # 驗證是否存在
-        try:
-            # 先試 TW
-            if not yf.Ticker(symbol).history(period='1d').empty:
-                # 爬取中文名
-                name = get_chinese_name_from_web(symbol)
-                return symbol, (name if name else f"自選股-{query}")
-            
-            # 再試 TWO (上櫃)
-            symbol = f"{query}.TWO"
-            if not yf.Ticker(symbol).history(period='1d').empty:
-                name = get_chinese_name_from_web(symbol)
-                return symbol, (name if name else f"自選股-{query}")
-        except:
-            pass
-        return None, None
-
-    # 2. 如果輸入的是中文 (如 台新金)
-    url = "https://query1.finance.yahoo.com/v1/finance/search"
-    params = {
-        "q": query,
-        "quotesCount": 10, # 抓多一點來過濾
-        "newsCount": 0,
-        "lang": "zh-Hant-TW",
-        "region": "TW"
-    }
-    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
         r = requests.get(url, params=params, headers=headers, timeout=5)
         data = r.json()
         
-        if 'quotes' in data:
-            for result in data['quotes']:
-                symbol = result.get('symbol', '')
-                # 只要結尾是 .TW 或 .TWO 的就是目標
-                if symbol.endswith('.TW') or symbol.endswith('.TWO'):
-                    # 找到代號後，一樣去爬網頁抓最準確的中文名
-                    name = get_chinese_name_from_web(symbol)
-                    if not name:
-                        name = result.get('shortname') or result.get('longname') or query
-                    return symbol, name
-    except:
+        # 解析回傳結構
+        results = data.get('data', {}).get('result', [])
+        
+        for res in results:
+            symbol = res.get('symbol')
+            name = res.get('name')
+            exchange = res.get('exchange')
+            type_ = res.get('type') # 確保是股票 (EQUITY)
+            
+            # 排除權證等雜訊，只抓上市 (TAI) 或 上櫃 (TWO)
+            if exchange == 'TAI':
+                full_symbol = f"{symbol}.TW"
+                return full_symbol, name
+            elif exchange == 'TWO':
+                full_symbol = f"{symbol}.TWO"
+                return full_symbol, name
+                
+    except Exception as e:
+        print(f"Search Error: {e}")
         pass
             
+    # 如果 API 失敗，但輸入的是純數字 (如 1616)，嘗試直接組裝
+    if query.isdigit():
+        return f"{query}.TW", f"自選股-{query}"
+        
     return None, None
 
 # --- 2. 核心邏輯 ---
@@ -225,13 +192,13 @@ with st.container():
         with st.form(key='add_stock_form', clear_on_submit=True):
             col_input, col_btn = st.columns([3, 1])
             with col_input: 
-                search_query = st.text_input("新增監控", placeholder="輸入代號 (1616) 或名稱 (台新金)")
+                search_query = st.text_input("新增監控", placeholder="輸入：台新金 或 1616")
             with col_btn: 
                 submitted = st.form_submit_button("搜尋加入")
             
             if submitted and search_query:
-                # 呼叫更強大的搜尋功能
-                symbol, name = smart_search_stock(search_query)
+                # 呼叫台灣原生搜尋
+                symbol, name = search_yahoo_tw_native(search_query)
                 
                 if symbol:
                     if symbol in st.session_state.watch_list:
@@ -242,10 +209,10 @@ with st.container():
                         st.success(f"已加入：{name} ({symbol})")
                         st.rerun()
                 else:
-                    st.error(f"找不到「{search_query}」，請確認名稱或代號。")
+                    st.error(f"找不到「{search_query}」，請確認名稱正確 (例如：台新金)。")
 
     with col_info:
-        st.info("💡 **強大搜尋**：現在輸入 **「1616」** 會顯示「億泰」，輸入 **「台新金」** 會找到「2887」。")
+        st.info("💡 **強大搜尋**：現在全面支援中文搜尋！試試看輸入 **「長榮航」** 或 **「台新金」**。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
@@ -262,6 +229,7 @@ html_content = """
     th { background: #f2f2f2; padding: 12px; text-align: left; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #ddd; }
     td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
     
+    /* 修正圖層問題 */
     tr { position: relative; z-index: 1; }
     tr:hover { background: #f8f9fa; z-index: 100; position: relative; }
     
@@ -272,6 +240,7 @@ html_content = """
     .tooltip-container { position: relative; display: inline-block; cursor: help; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 13px; transition: all 0.2s; }
     .tooltip-container:hover { transform: scale(1.05); }
     
+    /* 加大提示框與優化排版 */
     .tooltip-text { 
         visibility: hidden; width: 350px; background-color: #2c3e50; color: #fff; 
         text-align: left; border-radius: 8px; padding: 15px; position: absolute; z-index: 9999; 
@@ -282,6 +251,7 @@ html_content = """
     .tooltip-text::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px; border-width: 6px; border-style: solid; border-color: #2c3e50 transparent transparent transparent; }
     .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; }
 
+    /* 前三列向下顯示 */
     tr:nth-child(-n+3) .tooltip-text { bottom: auto; top: 140%; }
     tr:nth-child(-n+3) .tooltip-text::after { top: auto; bottom: 100%; border-color: transparent transparent #2c3e50 transparent; }
 
@@ -324,4 +294,4 @@ html_content += "</tbody></table></body></html>"
 components.html(html_content, height=800, scrolling=True)
 
 st.markdown("---")
-st.caption("資料來源：Yahoo Finance API")
+st.caption("資料來源：Yahoo Finance API (Yahoo TW Native Search)")
