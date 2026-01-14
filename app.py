@@ -5,7 +5,7 @@ import yfinance as yf
 import requests
 import re
 
-st.set_page_config(page_title="台股AI標股神探 (完美排序版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (標題修復版)", layout="wide")
 
 # --- 0. 初始化 ---
 if 'watch_list' not in st.session_state:
@@ -96,10 +96,8 @@ def validate_and_search(query):
 
 # --- 3. 分析邏輯 ---
 def analyze_stock_strategy(ticker_code, current_price, ma20, ma60):
-    # 回傳值多了 sort_order，用來做表格的 data-value 排序
     rating, color_class, predict_score = "觀察", "tag-hold", 50
-    sort_order = 2 # 預設排序 (強力=4, 買進=3, 觀察=2, 賣出/避開=1)
-    
+    sort_order = 2 
     sector_key = ticker_sector_map.get(ticker_code, "Default")
     
     if ma60 is None:
@@ -161,7 +159,6 @@ def process_stock_data():
             ma60 = sum(closes_list[-60:]) / 60 if len(closes_list) >= 60 else None
             clean_code = ticker.replace(".TW", "").replace(".TWO", "")
             
-            # 獲取排序權重 sort_order
             rating, color_class, score, reason, sort_order = analyze_stock_strategy(clean_code, current_price, ma20, ma60)
             
             is_new = (ticker == st.session_state.last_added)
@@ -172,8 +169,7 @@ def process_stock_data():
                 "code": clean_code, "name": current_map[ticker],
                 "url": f"https://tw.stock.yahoo.com/quote/{ticker}",
                 "price": current_price, "change": change_pct, 
-                "score": final_sort_key,
-                "sort_order": sort_order, # 加入這個給前端排序用
+                "score": final_sort_key, "sort_order": sort_order,
                 "ma20_disp": ma20_disp, "rating": rating, "rating_class": color_class,
                 "reason": reason, "trend": closes_list[-30:]
             })
@@ -193,7 +189,7 @@ def make_sparkline(data):
         y = h - ((val - min_v) / (max_v - min_v)) * (h - 4) - 2
         pts.append(f"{x},{y}")
     c = "#dc3545" if data[-1] > data[0] else "#28a745"
-    return f'<svg width="{w}" height="{h}" style="overflow:visible"><polyline points="{" ".join(pts)}" fill="none" stroke="{c}" stroke-width="2"/><circle cx="{pts[-1].split(",")[0]}" cy="{pts[-1].split(",")[1]}" r="3" fill="{c}"/></svg>'
+    return f'<svg width="{w}" height="{h}" style="overflow:visible"><polyline points="{" ".join(pts)}" fill="none" stroke="{c}" stroke-width="2"/><circle cx="{points[-1].split(",")[0]}" cy="{points[-1].split(",")[1]}" r="3" fill="{c}"/></svg>'
 
 st.title("🚀 台股 AI 飆股神探")
 with st.container():
@@ -216,52 +212,58 @@ with st.container():
                             st.success(f"已加入：{name}")
                             st.rerun()
                     else: st.error(f"加入失敗：{err}")
-
     with col_info:
-        st.info("💡 **完美修正**：表頭固定不被擋、AI 評級可正確點擊排序！")
+        st.info("💡 **顯示修復**：捲動時標題列會固定置頂，不會再被內容擋住。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
 if filter_strong: data_rows = [d for d in data_rows if d['rating'] == "強力推薦"]
 
-# --- 6. HTML/JS 渲染 (data-value 排序與 z-index 修復) ---
+# --- 6. HTML/JS 渲染 (標題置頂 Z-Index 修復版) ---
 html_content = """
 <!DOCTYPE html>
 <html>
 <head>
 <style>
     body { font-family: "Microsoft JhengHei", sans-serif; margin: 0; padding-bottom: 50px; }
-    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 15px; }
     
-    /* === 標題固定修正 === */
-    /* 將 z-index 設為超大 (10000)，確保它永遠在最上層 */
+    /* === 標題列 (Header) === */
+    /* z-index: 999 確保它在最高層 (比 tr:hover 高) */
     th { 
-        background: #f2f2f2; 
+        background-color: #f2f2f2; 
         padding: 12px; 
         text-align: left; 
         position: sticky; 
         top: 0; 
-        z-index: 10000; 
+        z-index: 999; 
         border-bottom: 2px solid #ddd; 
         cursor: pointer; 
-        user-select: none; 
+        user-select: none;
+        box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.1); /* 增加陰影讓層次更明顯 */
     }
     th:hover { background: #e6e6e6; }
     
     td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
     
-    /* 修正圖層與提示框 */
+    /* === 內容列 (Row) === */
+    /* 平常層級很低 (1) */
     tr { position: relative; z-index: 1; }
-    tr:hover { background: #f8f9fa; z-index: 100; position: relative; }
+    
+    /* 滑鼠移上去時層級變高 (10)，但絕對不能超過 th 的 999 */
+    tr:hover { background: #f8f9fa; z-index: 10; }
     
     .up { color: #d62728; font-weight: bold; }
     .down { color: #2ca02c; font-weight: bold; }
     a { text-decoration: none; color: #0066cc; font-weight: bold; background: #f0f7ff; padding: 2px 6px; border-radius: 4px; }
     
+    /* Tooltip 設定 (顯示在最上層) */
     .tooltip-container { position: relative; display: inline-block; cursor: help; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 13px; transition: all 0.2s; }
+    
     .tooltip-text { 
         visibility: hidden; width: 350px; background-color: #2c3e50; color: #fff; text-align: left; 
-        border-radius: 8px; padding: 15px; position: absolute; z-index: 9999; 
+        border-radius: 8px; padding: 15px; position: absolute; 
+        z-index: 1000; /* 比 th (999) 再高一點點，這樣才會浮在標題上面 */
         bottom: 140%; left: 50%; margin-left: -175px; opacity: 0; transition: opacity 0.3s; 
         font-weight: normal; font-size: 14px; line-height: 1.6; pointer-events: none; 
         box-shadow: 0 5px 15px rgba(0,0,0,0.5);
@@ -284,7 +286,7 @@ function sortTable(n) {
   var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
   table = document.getElementById("stockTable");
   switching = true;
-  dir = "desc"; // 預設降冪排序 (價格高->低，評級好->壞)
+  dir = "desc"; 
   while (switching) {
     switching = false;
     rows = table.rows;
@@ -292,13 +294,8 @@ function sortTable(n) {
       shouldSwitch = false;
       x = rows[i].getElementsByTagName("TD")[n];
       y = rows[i + 1].getElementsByTagName("TD")[n];
-      
-      // === 關鍵修正：使用 data-value 進行數值排序 ===
-      // 如果有 data-value 屬性，就用它來排序 (解決評級排序問題)
       var xVal = x.getAttribute("data-value") || (x.textContent || x.innerText);
       var yVal = y.getAttribute("data-value") || (y.textContent || y.innerText);
-      
-      // 轉成數字比較
       var xNum = parseFloat(xVal.replace(/[^0-9.-]/g, ''));
       var yNum = parseFloat(yVal.replace(/[^0-9.-]/g, ''));
 
@@ -347,7 +344,6 @@ function sortTable(n) {
 
 for row in data_rows:
     p_cls = "up" if row['change'] > 0 else "down"
-    # data-value 是排序的關鍵！我們把數值塞在這裡，JavaScript 讀取這個來排序
     html_content += f"""
         <tr>
             <td data-value="{row['code']}"><a href="{row['url']}" target="_blank">{row['code']}</a></td>
