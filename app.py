@@ -5,10 +5,11 @@ import yfinance as yf
 import requests
 import re
 
-st.set_page_config(page_title="台股AI標股神探 (暴力直連版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (股名補完版)", layout="wide")
 
-# --- 1. 內建百大熱門股 ---
+# --- 1. 內建百大熱門股 (字典確保正確性) ---
 DEFAULT_STOCKS = [
+    # 上市權值
     ("2330.TW", "台積電"), ("2454.TW", "聯發科"), ("2317.TW", "鴻海"), ("2303.TW", "聯電"), ("2308.TW", "台達電"),
     ("2382.TW", "廣達"), ("3231.TW", "緯創"), ("2357.TW", "華碩"), ("6669.TW", "緯穎"), ("3008.TW", "大立光"),
     ("2376.TW", "技嘉"), ("2356.TW", "英業達"), ("3017.TW", "奇鋐"), ("2301.TW", "光寶科"), ("3711.TW", "日月光投控"),
@@ -16,19 +17,39 @@ DEFAULT_STOCKS = [
     ("2881.TW", "富邦金"), ("2882.TW", "國泰金"), ("2891.TW", "中信金"), ("2886.TW", "兆豐金"), ("2884.TW", "玉山金"),
     ("5880.TW", "合庫金"), ("2892.TW", "第一金"), ("2880.TW", "華南金"), ("2885.TW", "元大金"), ("2890.TW", "永豐金"),
     ("1513.TW", "中興電"), ("1519.TW", "華城"), ("1503.TW", "士電"), ("1504.TW", "東元"), ("1514.TW", "亞力"),
-    ("6271.TW", "同欣電"), ("2453.TW", "凌群"), ("1616.TW", "億泰"), # 這裡也手動幫您補上
+    ("6271.TW", "同欣電"), ("2453.TW", "凌群"), ("1616.TW", "億泰"), ("1618.TW", "合機"), # 補上合機
 
+    # 上櫃熱門 (.TWO)
     ("5274.TWO", "信驊"), ("3529.TWO", "力旺"), ("8299.TWO", "群聯"), ("5347.TWO", "世界先進"), ("3293.TWO", "鈊象"),
     ("8069.TWO", "元太"), ("6147.TWO", "頎邦"), ("3105.TWO", "穩懋"), ("6488.TWO", "環球晶"), ("5483.TWO", "中美晶"),
     ("3324.TWO", "雙鴻"), ("6274.TWO", "台燿"), ("3260.TWO", "威剛"), ("6282.TW", "康舒"),
     
+    # 熱門 ETF
     ("0050.TW", "元大台灣50"), ("0056.TW", "元大高股息"), ("00878.TW", "國泰永續高股息"), ("00919.TW", "群益台灣精選高息"),
     ("00929.TW", "復華台灣科技優息"), ("00940.TW", "元大台灣價值高息"), ("00679B.TWO", "元大美債20年")
 ]
 
+# --- 2. 建立強制正名字典 (確保顯示名稱正確) ---
+CORRECTIONS = {
+    "6271.TW": "同欣電",
+    "2453.TW": "凌群",
+    "1616.TW": "億泰",
+    "1618.TW": "合機",
+    "1212.TW": None,
+    "1212.TWO": None
+}
+
 # --- 0. 初始化 Session State ---
 if 'watch_list' not in st.session_state:
     st.session_state.watch_list = {code: name for code, name in DEFAULT_STOCKS}
+
+# 強制正名：修復任何殘留的錯誤名稱
+for code, correct_name in CORRECTIONS.items():
+    if code in st.session_state.watch_list:
+        if correct_name is None:
+            del st.session_state.watch_list[code]
+        else:
+            st.session_state.watch_list[code] = correct_name
 
 if 'last_added' not in st.session_state:
     st.session_state.last_added = ""
@@ -42,57 +63,72 @@ sector_trends = {
     "Default": {"bull": "資金輪動健康，法人進駐。", "bear": "產業前景不明，面臨修正。"}
 }
 
-# --- 2. 搜尋與驗證邏輯 (Yahoo API + 暴力直連) ---
-def search_yahoo_official(query):
+# --- 2. 搜尋與驗證邏輯 (API + 爬蟲補位) ---
+
+def search_yahoo_api(query):
+    """Level 1: 快速 API 查詢"""
     url = "https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService"
     try:
         r = requests.get(url, params={"query": query, "limit": 5}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
         data = r.json()
         results = data.get('data', {}).get('result', [])
         for res in results:
-            # 寬鬆匹配：只要搜尋結果包含輸入的字串即可
             if query in res.get('symbol') or query in res.get('name'):
                 if res.get('exchange') == 'TAI': return f"{res['symbol']}.TW", res['name']
                 if res.get('exchange') == 'TWO': return f"{res['symbol']}.TWO", res['name']
+                if res.get('exchange') in ['NMS', 'NYQ']: return res['symbol'], res['name']
     except: pass
     return None, None
 
+def scrape_yahoo_name(symbol):
+    """Level 2: 網頁爬蟲抓取正確股名 (解決 1618 這種 API 找不到的情況)"""
+    url = f"https://tw.stock.yahoo.com/quote/{symbol}"
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=3)
+        if r.status_code == 200:
+            # 抓取 <title>合機(1618) - 個股走勢...</title>
+            match = re.search(r'<title>(.*?)[\(（]', r.text)
+            if match:
+                return match.group(1).strip()
+    except: pass
+    return None
+
 def probe_ticker(symbol):
-    """
-    暴力直連：不問搜尋 API，直接嘗試下載股價。
-    如果下載得到，代表股票存在。
-    """
+    """Level 3: 暴力測試 (最後手段)"""
     try:
         t = yf.Ticker(symbol)
-        # 嘗試抓一天資料
-        hist = t.history(period="1d")
-        if not hist.empty:
-            # 嘗試抓取名稱，抓不到就回傳 True 讓外層處理
-            return True
+        if not t.history(period="1d").empty: return True
     except: pass
     return False
 
 def validate_and_add(query):
     query = query.strip().upper()
     
-    # === 1. 優先問 Yahoo 搜尋 API (正規途徑) ===
-    symbol, real_name = search_yahoo_official(query)
-    if symbol and real_name:
-        return symbol, real_name, None
+    # 1. 優先查 API
+    symbol, name = search_yahoo_api(query)
+    if symbol and name: return symbol, name, None
 
-    # === 2. 暴力直連 (Yahoo 搜尋找不到時的備案) ===
-    # 這就是解決 1616 的關鍵：搜尋不到沒關係，直接撞撞看
+    # 2. API 失敗，嘗試「爬蟲 + 暴力直連」
     if query.isdigit():
-        # A. 猜它是上市股 (.TW)
-        if probe_ticker(f"{query}.TW"):
-            # 既然 Yahoo 搜尋不到名字，我們先暫時叫它「代號」，後續列表顯示時會再嘗試抓
-            return f"{query}.TW", f"{query} (上市)", None
-        
-        # B. 猜它是上櫃股 (.TWO)
-        if probe_ticker(f"{query}.TWO"):
-            return f"{query}.TWO", f"{query} (上櫃)", None
+        # 試上市 (.TW)
+        target = f"{query}.TW"
+        scraped_name = scrape_yahoo_name(target) # 試著去網頁抓名字
+        if scraped_name: 
+            return target, scraped_name, None # 抓到了！回傳正確股名 (如：合機)
+        elif probe_ticker(target):
+            # 抓不到名字但有股價，只好回傳暫定名
+            return target, f"{query} (上市)", None
+            
+        # 試上櫃 (.TWO)
+        target = f"{query}.TWO"
+        scraped_name = scrape_yahoo_name(target)
+        if scraped_name:
+            return target, scraped_name, None
+        elif probe_ticker(target):
+            return target, f"{query} (上櫃)", None
 
-    return None, None, f"系統與 Yahoo 皆找不到「{query}」，且暴力連線失敗。"
+    return None, None, f"Yahoo 找不到「{query}」，請確認代號是否正確。"
 
 # --- 3. 分析邏輯 ---
 def analyze_stock_strategy(ticker_code, current_price, ma20, ma60):
@@ -140,10 +176,14 @@ def fetch_stock_data_wrapper(tickers):
 def process_stock_data():
     current_map = st.session_state.watch_list
     tickers = list(current_map.keys())
+    
+    if not tickers: return []
+
     with st.spinner(f'AI 正在計算 {len(tickers)} 檔個股數據...'):
         data_download = fetch_stock_data_wrapper(tickers)
     
     rows = []
+    invalid_tickers = [] 
     
     for ticker in tickers:
         clean_code = ticker.replace(".TW", "").replace(".TWO", "")
@@ -158,15 +198,7 @@ def process_stock_data():
             closes_list = closes.dropna().tolist()
             
             if len(closes_list) < 1:
-                # 即使沒資料，也不要刪除，顯示 N/A 讓使用者知道有加進去
-                # 但因為剛剛有暴力直連驗證過，這裡通常會有資料
-                rows.append({
-                    "code": clean_code, "name": stock_name,
-                    "url": f"https://tw.stock.yahoo.com/quote/{ticker}",
-                    "price": 0, "change": 0, "score": 0, "sort_order": 0,
-                    "ma20_disp": "-", "rating": "資料N/A", "rating_class": "tag-sell",
-                    "reason": "⚠️ 暫無數據", "trend": []
-                })
+                invalid_tickers.append(ticker)
                 continue
             
             current_price = closes_list[-1]
@@ -193,7 +225,14 @@ def process_stock_data():
                 "trend": closes_list[-30:]
             })
         except:
+            invalid_tickers.append(ticker)
             continue
+    
+    if invalid_tickers:
+        for bad_ticker in invalid_tickers:
+            if bad_ticker in st.session_state.watch_list:
+                del st.session_state.watch_list[bad_ticker]
+        st.toast(f"已自動移除 {len(invalid_tickers)} 筆無效資料", icon="🧹")
     
     return sorted(rows, key=lambda x: x['score'], reverse=True)
 
@@ -222,7 +261,7 @@ with st.container():
     with col_add:
         with st.form(key='add_stock_form', clear_on_submit=True):
             col_in, col_btn = st.columns([3, 1])
-            with col_in: query = st.text_input("新增監控", placeholder="輸入代號(如 1616) 或 股名")
+            with col_in: query = st.text_input("新增監控", placeholder="輸入代號(如 1618) 或 股名")
             with col_btn: submitted = st.form_submit_button("搜尋並加入")
             
             if submitted and query:
@@ -240,7 +279,7 @@ with st.container():
                     st.error(f"❌ {err}")
 
     with col_info:
-        st.info("💡 **暴力直連模式**：Yahoo 搜不到的股票 (如 1616)，系統會直接嘗試連線證交所。")
+        st.info("💡 **全能搜尋**：API 找不到時，系統會自動去 Yahoo 網頁把正確股名 (如 合機) 抓回來。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
