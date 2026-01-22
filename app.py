@@ -5,117 +5,100 @@ import yfinance as yf
 import requests
 import re
 
-st.set_page_config(page_title="台股AI標股神探 (資料庫修正版)", layout="wide")
+st.set_page_config(page_title="台股AI標股神探 (Yahoo匯入版)", layout="wide")
 
-# --- 1. 定義百大熱門股資料庫 (人工校對上市.TW / 上櫃.TWO) ---
-INIT_STOCKS = [
-    # === 半導體與 AI (上市 .TW) ===
-    ("2330.TW", "台積電"), ("2454.TW", "聯發科"), ("2317.TW", "鴻海"), ("2303.TW", "聯電"), ("3711.TW", "日月光投控"),
-    ("2308.TW", "台達電"), ("2382.TW", "廣達"), ("3231.TW", "緯創"), ("2357.TW", "華碩"), ("6669.TW", "緯穎"),
-    ("2379.TW", "瑞昱"), ("3034.TW", "聯詠"), ("3035.TW", "智原"), ("3443.TW", "創意"), ("3661.TW", "世芯-KY"),
-    ("3008.TW", "大立光"), ("2408.TW", "南亞科"), ("2376.TW", "技嘉"), ("2356.TW", "英業達"), ("2324.TW", "仁寶"),
-    ("3017.TW", "奇鋐"), ("2301.TW", "光寶科"), ("2368.TW", "金像電"), ("3037.TW", "欣興"), ("3044.TW", "健鼎"),
-    ("2313.TW", "華通"), ("2383.TW", "台光電"), ("2449.TW", "京元電子"),
-
-    # === 半導體與 AI (上櫃 .TWO) - 修正重災區 ===
-    ("5274.TWO", "信驊"), ("3529.TWO", "力旺"), ("8299.TWO", "群聯"), ("5347.TWO", "世界先進"),
-    ("3293.TWO", "鈊象"), ("8069.TWO", "元太"), ("6147.TWO", "頎邦"), ("3105.TWO", "穩懋"),
-    ("6488.TWO", "環球晶"), ("5483.TWO", "中美晶"), ("4966.TWO", "譜瑞-KY"), ("6223.TWO", "旺矽"),
-    ("3324.TWO", "雙鴻"), ("6274.TWO", "台燿"), ("3260.TWO", "威剛"),
-
-    # === 金融股 (上市) - 修正新光金 ===
-    ("2881.TW", "富邦金"), ("2882.TW", "國泰金"), ("2891.TW", "中信金"), ("2886.TW", "兆豐金"), ("2884.TW", "玉山金"),
-    ("2885.TW", "元大金"), ("2892.TW", "第一金"), ("2880.TW", "華南金"), ("2883.TW", "凱基金"), ("2890.TW", "永豐金"),
-    ("5880.TW", "合庫金"), ("2887.TW", "台新新光金"), # 修正：2887 已合併更名
-    ("2834.TW", "臺企銀"), ("2801.TW", "彰銀"), ("5876.TW", "上海商銀"), ("2812.TW", "台中銀"), ("5871.TW", "中租-KY"),
-
-    # === 傳產龍頭 (上市) ===
-    ("1301.TW", "台塑"), ("1303.TW", "南亞"), ("1326.TW", "台化"), ("6505.TW", "台塑化"), ("1101.TW", "台泥"),
-    ("1102.TW", "亞泥"), ("2002.TW", "中鋼"), ("2027.TW", "大成鋼"), ("1605.TW", "華新"), ("1402.TW", "遠東新"),
-    ("1216.TW", "統一"), ("2912.TW", "統一超"), ("2207.TW", "和泰車"), ("9904.TW", "寶成"), ("9910.TW", "豐泰"),
-    ("1313.TW", "聯成"), ("1218.TW", "泰山"),
-
-    # === 航運與重電 (上市) ===
-    ("2603.TW", "長榮"), ("2609.TW", "陽明"), ("2615.TW", "萬海"), ("2618.TW", "長榮航"), ("2610.TW", "華航"),
-    ("2634.TW", "漢翔"), ("1513.TW", "中興電"), ("1519.TW", "華城"), ("1503.TW", "士電"), ("1504.TW", "東元"),
-    ("1514.TW", "亞力"), ("1609.TW", "大亞"), ("1616.TW", "億泰"), ("6282.TW", "康舒"),
-
-    # === 電信與面板 (上市) ===
-    ("2412.TW", "中華電"), ("3045.TW", "台灣大"), ("4904.TW", "遠傳"), ("2409.TW", "友達"), ("3481.TW", "群創"),
-
-    # === 熱門 ETF (上市) ===
-    ("0050.TW", "元大台灣50"), ("0056.TW", "元大高股息"), ("00878.TW", "國泰永續高股息"), ("00919.TW", "群益台灣精選高息"),
-    ("00929.TW", "復華台灣科技優息"), ("00940.TW", "元大台灣價值高息"), ("006208.TW", "富邦台50"), ("00713.TW", "元大高息低波"),
-    ("00632R.TW", "元大台灣50反1"), 
-    
-    # === 債券 ETF (上櫃 .TWO) - 修正 N/A 原因 ===
-    ("00679B.TWO", "元大美債20年"), ("00687B.TWO", "國泰20年美債"), ("00937B.TWO", "群益ESG投等債20+")
+# --- 1. 基礎熱門股 (作為預設顯示，不想看可以刪除) ---
+DEFAULT_STOCKS = [
+    ("2330.TW", "台積電"), ("2317.TW", "鴻海"), ("2454.TW", "聯發科"), 
+    ("2603.TW", "長榮"), ("2609.TW", "陽明"), ("2618.TW", "長榮航"),
+    ("2881.TW", "富邦金"), ("2882.TW", "國泰金"), ("2891.TW", "中信金"),
+    ("1513.TW", "中興電"), ("1519.TW", "華城"), ("3231.TW", "緯創"),
+    ("3008.TW", "大立光"), ("3661.TW", "世芯-KY"), ("2376.TW", "技嘉"),
+    ("0050.TW", "元大台灣50"), ("0056.TW", "元大高股息"), ("00878.TW", "國泰永續高股息"),
+    ("00940.TW", "元大台灣價值高息"), ("00679B.TWO", "元大美債20年")
 ]
-
-# 建立快速查詢字典 (Name -> Code)
-tw_stock_dict = {name: code for code, name in INIT_STOCKS}
-# 補充簡稱對應
-for code, name in INIT_STOCKS:
-    simple_code = code.split('.')[0]
-    tw_stock_dict[simple_code] = code # 讓輸入 "5274" 自動對應 "5274.TWO"
 
 # --- 0. 初始化 Session State ---
 if 'watch_list' not in st.session_state:
-    st.session_state.watch_list = {code: name for code, name in INIT_STOCKS}
+    # 初始化清單
+    st.session_state.watch_list = {code: name for code, name in DEFAULT_STOCKS}
 
 if 'last_added' not in st.session_state:
     st.session_state.last_added = ""
 
-# 產業分類對應
-ticker_sector_map = {
-    "2330": "Semi", "2454": "Semi", "2603": "Ship", "2609": "Ship", "2615": "Ship",
-    "2618": "Trans", "2610": "Trans", "2881": "Fin", "2882": "Fin"
-} 
+# 產業分類 (僅作範例，新加入的股票會歸類為 Default)
+ticker_sector_map = {"2330": "Semi", "2603": "Ship", "2618": "Trans"} 
 sector_trends = {
     "Semi": {"bull": "AI 晶片需求強勁。", "bear": "消費電子復甦慢。"},
     "Ship": {"bull": "紅海危機推升運價。", "bear": "新船運力投放過剩。"},
     "Trans": {"bull": "客運復甦票價高檔。", "bear": "燃油成本上升。"},
-    "Fin": {"bull": "獲利與配息穩定。", "bear": "降息縮小利差。"},
     "Default": {"bull": "資金輪動健康，法人進駐。", "bear": "產業前景不明，面臨修正。"}
 }
 
-# --- 2. 搜尋與驗證邏輯 ---
-def search_yahoo_tw_native(query):
+# --- 2. 核心功能：Yahoo 實時匯入 (Auto-Import) ---
+def search_yahoo_and_get_name(query):
+    """
+    這是核心改動：直接問 Yahoo 這個代號/名稱是什麼。
+    回傳：(完整代號, 正確股名)
+    """
     url = "https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService"
     try:
+        # 1. 呼叫 Yahoo 建議 API
         r = requests.get(url, params={"query": query, "limit": 5}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
         data = r.json()
         results = data.get('data', {}).get('result', [])
+        
+        # 2. 解析結果
         for res in results:
-            if (res.get('name') == query or res.get('symbol') == query) and res.get('exchange') in ['TAI', 'TWO']:
-                suffix = ".TW" if res['exchange'] == 'TAI' else ".TWO"
-                return f"{res['symbol']}{suffix}", res['name']
-        for res in results:
-            if res.get('exchange') in ['TAI', 'TWO']:
-                suffix = ".TW" if res['exchange'] == 'TAI' else ".TWO"
-                return f"{res['symbol']}{suffix}", res['name']
-    except Exception as e: pass
+            symbol = res.get('symbol')
+            name = res.get('name')
+            exchange = res.get('exchange')
+            
+            # 檢查是否為台股 (TAI=上市, TWO=上櫃)
+            if exchange == 'TAI':
+                return f"{symbol}.TW", name
+            elif exchange == 'TWO':
+                return f"{symbol}.TWO", name
+            
+            # 如果使用者想加美股 (例如 NVDA, TSLA)
+            # Yahoo 對美股的 exchange 通常顯示 'NMS', 'NYQ' 等
+            if exchange in ['NMS', 'NYQ', 'ASE']:
+                return symbol, name # 美股代號不需要加 .TW
+
+    except Exception as e:
+        print(f"Yahoo API Error: {e}")
+        pass
+        
     return None, None
 
-def validate_and_search(query):
+def validate_and_add(query):
     query = query.strip()
     
-    # 策略 1: 查內建字典 (現在非常準確)
-    if query in tw_stock_dict:
-        full_code = tw_stock_dict[query]
-        # 如果是輸入代號(如3324)，從字典反查名稱
-        name = query if not query.replace('.','').isdigit() else st.session_state.watch_list.get(full_code, f"自選股-{query}")
-        return full_code, name, None
+    # 步驟 1: 透過 Yahoo API 取得「權威」資訊
+    # 不管使用者輸入 "6271", "凌群", 還是 "2330", 我們都以 Yahoo 回傳的為準
+    symbol, real_name = search_yahoo_and_get_name(query)
+    
+    if symbol and real_name:
+        # 成功從 Yahoo 抓到資料
+        return symbol, real_name, None
+    
+    # 步驟 2: 如果 API 失敗 (例如 Yahoo 當機)，但輸入的是純數字代號
+    # 我們做最後的掙扎，嘗試直接組合成 .TW 或 .TWO 測試
+    if query.isdigit():
+        try:
+            # 盲測上市
+            t = yf.Ticker(f"{query}.TW")
+            if not t.history(period='1d').empty:
+                return f"{query}.TW", f"自選股-{query}", None # 抓不到名字至少能抓股價
+            
+            # 盲測上櫃
+            t = yf.Ticker(f"{query}.TWO")
+            if not t.history(period='1d').empty:
+                return f"{query}.TWO", f"自選股-{query}", None
+        except:
+            pass
 
-    # 反向查找 (Input: 5274 -> 5274.TWO)
-    for name, code in tw_stock_dict.items():
-        if query == code.split('.')[0]: return code, name, None
-
-    # 策略 2: API 查詢
-    symbol, name = search_yahoo_tw_native(query)
-    if symbol and name: return symbol, name, None
-
-    return None, None, "查無此股，請確認代號或名稱是否正確。"
+    return None, None, f"找不到「{query}」，Yahoo 查無此股。"
 
 # --- 3. 分析邏輯 ---
 def analyze_stock_strategy(ticker_code, current_price, ma20, ma60):
@@ -163,7 +146,7 @@ def fetch_stock_data_wrapper(tickers):
 def process_stock_data():
     current_map = st.session_state.watch_list
     tickers = list(current_map.keys())
-    with st.spinner(f'AI 正在計算 {len(tickers)} 檔個股數據...'):
+    with st.spinner(f'AI 正在連線 Yahoo Finance 分析 {len(tickers)} 檔個股...'):
         data_download = fetch_stock_data_wrapper(tickers)
     
     rows = []
@@ -180,6 +163,7 @@ def process_stock_data():
             if isinstance(closes, pd.DataFrame): closes = closes.iloc[:, 0]
             closes_list = closes.dropna().tolist()
             
+            # 容錯：如果沒資料，顯示 N/A
             if len(closes_list) < 1:
                 is_new = (ticker == st.session_state.last_added)
                 sort_key = 9999 if is_new else 0
@@ -188,7 +172,7 @@ def process_stock_data():
                     "url": f"https://tw.stock.yahoo.com/quote/{ticker}",
                     "price": 0, "change": 0, "score": sort_key, "sort_order": 0,
                     "ma20_disp": "-", "rating": "資料N/A", "rating_class": "tag-sell",
-                    "reason": "⚠️ API 暫無數據 (可能是代號後綴錯誤)", "trend": []
+                    "reason": "⚠️ Yahoo Finance API 暫無此代號數據。", "trend": []
                 })
                 continue
             
@@ -252,24 +236,26 @@ with st.container():
     with col_add:
         with st.form(key='add_stock_form', clear_on_submit=True):
             col_in, col_btn = st.columns([3, 1])
-            with col_in: query = st.text_input("新增監控", placeholder="輸入代號(1218)或名稱(長榮航)")
-            with col_btn: submitted = st.form_submit_button("新增")
+            with col_in: query = st.text_input("新增監控", placeholder="輸入：6271 或 凌群")
+            with col_btn: submitted = st.form_submit_button("Yahoo 匯入")
+            
             if submitted and query:
-                if not query.isdigit() and re.search(r'\d+[a-zA-Z]', query):
-                     st.error("代號格式錯誤")
+                # 直接呼叫 Yahoo 匯入功能
+                symbol, name, err = validate_and_add(query)
+                
+                if symbol:
+                    if symbol in st.session_state.watch_list:
+                        st.warning(f"「{name}」已在清單中")
+                    else:
+                        st.session_state.watch_list[symbol] = name
+                        st.session_state.last_added = symbol
+                        st.success(f"✅ 成功匯入：{name} ({symbol})")
+                        st.rerun()
                 else:
-                    symbol, name, err = validate_and_search(query)
-                    if symbol:
-                        if symbol in st.session_state.watch_list: st.warning(f"{name} 已在清單中")
-                        else:
-                            st.session_state.watch_list[symbol] = name
-                            st.session_state.last_added = symbol
-                            st.success(f"已加入：{name}")
-                            st.rerun()
-                    else: st.error(f"❌ {err}")
+                    st.error(f"❌ {err}")
 
     with col_info:
-        st.info("💡 **資料庫修復**：已更正「信驊」、「力旺」、「雙鴻」、「美債20年」等上櫃股票設定，並將 2888 更新為 2887 台新新光金。")
+        st.info("💡 **Yahoo 匯入模式**：輸入代號或名稱，系統會直接從 Yahoo 抓取正確股名。試試看輸入 **6271**，它會自動抓到 **凌群**。")
         filter_strong = st.checkbox("🔥 只看強力推薦", value=False)
 
 data_rows = process_stock_data()
